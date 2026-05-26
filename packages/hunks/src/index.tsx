@@ -18,5 +18,8 @@ function exit() {
 process.on("SIGTERM", exit)
 process.on("SIGINT", exit)
 
+// render() resolves as soon as the Solid root mounts; the renderer keeps the
+// event loop alive via its own listeners/timers. We must not call exit() here
+// or the process tears down before paint and the terminal is left in a broken
+// state.
 await render(() => <App onExit={exit} />, renderer)
-exit()
