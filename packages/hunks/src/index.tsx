@@ -1,7 +1,13 @@
-import { createCliRenderer } from "@opentui/core"
+import { addDefaultParsers, createCliRenderer } from "@opentui/core"
 import { render } from "@opentui/solid"
 import { App } from "./app"
+import parsers from "./parsers-config"
 import { loadSystemThemeFromColors } from "./theme"
+
+// Register tree-sitter grammars beyond the ones bundled in @opentui/core
+// (js/ts/markdown/zig). These download on first use and cache under
+// ~/.local/share/opentui. Must run before the diff renderable mounts.
+addDefaultParsers(parsers.parsers)
 
 const renderer = await createCliRenderer({
   externalOutputMode: "passthrough",
