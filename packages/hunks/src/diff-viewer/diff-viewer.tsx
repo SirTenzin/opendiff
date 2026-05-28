@@ -9,7 +9,6 @@ import { Panel, PanelGroup, Separator } from "./layout"
 import { Picker } from "./picker"
 import { CustomSpeedScroll } from "./scroll-accel"
 import {
-  allExpandedFileTreeDirectories,
   buildFileTree,
   fileTreeFileSelection,
   type FileTreeRow,
@@ -162,6 +161,16 @@ function filetype(input?: string) {
   return language
 }
 
+// All ancestor directory paths of a file/dir path, e.g. "a/b/c" → ["a", "a/b"].
+function ancestorDirPaths(nodePath: string): string[] {
+  const segments = nodePath.split("/").filter(Boolean)
+  const result: string[] = []
+  for (let i = 1; i < segments.length; i++) {
+    result.push(segments.slice(0, i).join("/"))
+  }
+  return result
+}
+
 export function DiffViewer(props: { diffs: DiffFile[]; onExit: () => void; onReload: () => void }) {
   const dimensions = useTerminalDimensions()
   const themeState = useTheme()
@@ -178,13 +187,16 @@ export function DiffViewer(props: { diffs: DiffFile[]; onExit: () => void; onRel
   const [viewOverride, setViewOverride] = createSignal<DiffView | undefined>()
   const view = createMemo(() => (splitAvailable() ? (viewOverride() ?? defaultView()) : "unified"))
   const fileTree = createMemo(() => buildFileTree(files()))
-  const [expandedFileNodes, setExpandedFileNodes] = createSignal<ReadonlySet<number>>(new Set())
-  const [highlightedFileNode, setHighlightedFileNode] = createSignal<number | undefined>()
-  const [lastHighlightedFileNode, setLastHighlightedFileNode] = createSignal<number | undefined>()
-  const [activePatchFileIndex, setActivePatchFileIndex] = createSignal<number | undefined>()
-  const [selectedFileIndex, setSelectedFileIndex] = createSignal<number | undefined>()
+  // Persisted tree/selection state is keyed by stable string paths (not row
+  // indices) so it survives an auto-refresh that adds/removes/reorders files.
+  // collapsedDirPaths holds directories the user explicitly collapsed; an empty
+  // set means everything is expanded (so new folders appear open by default).
+  const [collapsedDirPaths, setCollapsedDirPaths] = createSignal<ReadonlySet<string>>(new Set())
+  const [highlightedPath, setHighlightedPath] = createSignal<string | undefined>()
+  const [lastHighlightedPath, setLastHighlightedPath] = createSignal<string | undefined>()
+  const [activePatchPath, setActivePatchPath] = createSignal<string | undefined>()
   const [reviewedFileNames, setReviewedFileNames] = createSignal<ReadonlySet<string>>(new Set())
-  const fileRows = createMemo(() => flattenFileTree(fileTree(), expandedFileNodes()))
+  const fileRows = createMemo(() => flattenFileTree(fileTree(), collapsedDirPaths()))
   const patchFileIndexes = createMemo(() => orderedPatchFileIndexes(flattenFileTree(fileTree())))
 
   // Help dialog visibility (opened by `?`).
@@ -221,38 +233,50 @@ export function DiffViewer(props: { diffs: DiffFile[]; onExit: () => void; onRel
   const [pendingPatchScrollFileIndex, setPendingPatchScrollFileIndex] = createSignal<number | undefined>()
   const [patchFillerHeight, setPatchFillerHeight] = createSignal(0)
 
-  createEffect(() => {
-    setExpandedFileNodes(allExpandedFileTreeDirectories(fileTree()))
-    setHighlightedFileNode(undefined)
-    setLastHighlightedFileNode(undefined)
-    setActivePatchFileIndex(undefined)
-    setSelectedFileIndex(undefined)
-    setReviewedFileNames(new Set<string>())
-  })
+  // No reset-on-data-change effect: because all persisted state is keyed by
+  // path, it simply survives a refresh (manual `r` or auto-refresh) instead of
+  // being wiped. Stale paths are resolved away lazily (see ensureHighlightedFileNode
+  // and currentPatchFileIndex).
 
   const ensureHighlightedFileNode = () => {
-    const highlighted = highlightedFileNode()
-    if (highlighted !== undefined && fileRows().some((row) => row.id === highlighted)) return
-    const lastHighlighted = lastHighlightedFileNode()
+    const highlighted = highlightedPath()
+    if (highlighted !== undefined && fileRows().some((row) => row.path === highlighted)) return
+    const lastHighlighted = lastHighlightedPath()
     const next =
-      lastHighlighted !== undefined && fileRows().some((row) => row.id === lastHighlighted)
+      lastHighlighted !== undefined && fileRows().some((row) => row.path === lastHighlighted)
         ? lastHighlighted
-        : fileRows().find((row) => row.fileIndex !== undefined)?.id
-    setHighlightedFileNode(next)
+        : fileRows().find((row) => row.fileIndex !== undefined)?.path
+    setHighlightedPath(next)
   }
 
-  const setHighlighted = (node: number | undefined) => {
-    setHighlightedFileNode(node)
-    if (node !== undefined) setLastHighlightedFileNode(node)
+  const setHighlighted = (path: string | undefined) => {
+    setHighlightedPath(path)
+    if (path !== undefined) setLastHighlightedPath(path)
   }
 
   const moveFileSelection = (offset: number) =>
-    setHighlighted(moveFileTreeSelection(fileRows(), highlightedFileNode(), offset))
+    setHighlighted(moveFileTreeSelection(fileRows(), highlightedPath(), offset))
 
   const clearFileTreePatchState = () => {
-    setHighlightedFileNode(undefined)
-    setActivePatchFileIndex(undefined)
+    setHighlightedPath(undefined)
+    setActivePatchPath(undefined)
   }
+
+  // Resolve the persisted active-patch path to a fresh index each render so it
+  // stays correct after a refresh reshuffles the diffs array. Undefined if the
+  // file no longer exists in the current diff.
+  const activePatchFileIndex = () => {
+    const activePath = activePatchPath()
+    if (activePath === undefined) return undefined
+    const index = files().findIndex((file) => file.file === activePath)
+    return index === -1 ? undefined : index
+  }
+
+  // The currently-selected patch file (the one shown in single-patch mode and
+  // used as the navigation anchor). Derived from the path-keyed activePatchPath
+  // rather than persisted as an index, so it can never point at the wrong file
+  // after an auto-refresh reshuffles the diffs array.
+  const selectedFileIndex = activePatchFileIndex
 
   const scrollPatchNodeToTop = (patchNode: BoxRenderable) => {
     requestAnimationFrame(() => {
@@ -267,18 +291,22 @@ export function DiffViewer(props: { diffs: DiffFile[]; onExit: () => void; onRel
   const revealFileTreeFile = (fileIndex: number) => {
     const selection = fileTreeFileSelection(fileTree(), fileIndex)
     if (!selection) return
-    setExpandedFileNodes((expanded) => {
-      const next = new Set(expanded)
-      selection.expandedNodes.forEach((node) => next.add(node))
-      return next
-    })
-    setHighlighted(selection.highlightedNode)
+    // Ensure every ancestor directory of the revealed file is expanded
+    // (un-collapsed) so the file row is actually visible.
+    const ancestors = ancestorDirPaths(selection.path)
+    if (ancestors.length > 0) {
+      setCollapsedDirPaths((collapsed) => {
+        const next = new Set(collapsed)
+        ancestors.forEach((dir) => next.delete(dir))
+        return next
+      })
+    }
+    setHighlighted(selection.path)
   }
 
   const selectPatchFile = (fileIndex: number) => {
     revealFileTreeFile(fileIndex)
-    setActivePatchFileIndex(fileIndex)
-    setSelectedFileIndex(fileIndex)
+    setActivePatchPath(files()[fileIndex]?.file)
   }
 
   const scrollToFileIndex = (fileIndex: number | undefined) => {
@@ -321,7 +349,6 @@ export function DiffViewer(props: { diffs: DiffFile[]; onExit: () => void; onRel
     scrollToFileIndex(next)
   }
 
-  const highlightedPatchFileIndex = () => fileRows().find((row) => row.id === highlightedFileNode())?.fileIndex
   const firstPatchFileIndex = () => fileRows().find((row) => row.fileIndex !== undefined)?.fileIndex
   const visiblePatchFiles = createMemo(() => {
     if (!singlePatch()) {
@@ -404,28 +431,29 @@ export function DiffViewer(props: { diffs: DiffFile[]; onExit: () => void; onRel
   })
 
   const toggleSelectedFileTreeRow = () => {
-    const highlighted = fileRows().find((row) => row.id === highlightedFileNode())
-    if (highlighted?.fileIndex !== undefined) {
+    const highlighted = fileRows().find((row) => row.path === highlightedPath())
+    if (!highlighted) return
+    if (highlighted.fileIndex !== undefined) {
       jumpToFileIndex(highlighted.fileIndex)
       return
     }
-    setExpandedFileNodes((expanded) => toggleFileTreeDirectory(fileTree(), expanded, highlightedFileNode()))
+    setCollapsedDirPaths((collapsed) => toggleFileTreeDirectory(collapsed, highlighted.path))
   }
 
   const clickFileTreeRow = (row: FileTreeRow) => {
     setFocus("files")
-    setHighlighted(row.id)
+    setHighlighted(row.path)
     if (row.fileIndex !== undefined) {
       jumpToFileIndex(row.fileIndex)
       return
     }
-    setExpandedFileNodes((expanded) => toggleFileTreeDirectory(fileTree(), expanded, row.id))
+    setCollapsedDirPaths((collapsed) => toggleFileTreeDirectory(collapsed, row.path))
   }
 
   const toggleSelectedFileReviewed = () => {
     const fileIndex =
       focus() === "files"
-        ? fileRows().find((row) => row.id === highlightedFileNode())?.fileIndex
+        ? fileRows().find((row) => row.path === highlightedPath())?.fileIndex
         : (selectedFileIndex() ?? activePatchFileIndex() ?? currentPatchFileIndex())
     const file = fileIndex === undefined ? undefined : files()[fileIndex]?.file
     if (!file) return
@@ -514,7 +542,7 @@ export function DiffViewer(props: { diffs: DiffFile[]; onExit: () => void; onRel
       return
     }
     if (key === "e") {
-      setExpandedFileNodes(allExpandedFileTreeDirectories(fileTree()))
+      setCollapsedDirPaths(new Set<string>())
       return
     }
     if (key === "j" || key === "down") {
@@ -581,28 +609,29 @@ export function DiffViewer(props: { diffs: DiffFile[]; onExit: () => void; onRel
     }
     if (key === "right" || key === "l") {
       if (focus() === "files") {
-        const highlighted = highlightedFileNode()
-        if (highlighted !== undefined && expandedFileNodes().has(highlighted)) {
+        const highlighted = highlightedPath()
+        const row = highlighted === undefined ? undefined : fileRows().find((item) => item.path === highlighted)
+        // If on an expanded directory, descend into its first child; otherwise expand it.
+        if (row?.kind === "directory" && !collapsedDirPaths().has(row.path)) {
           setHighlighted(moveFileTreeSelectionToFirstChild(fileRows(), highlighted))
           return
         }
-        setExpandedFileNodes((expanded) =>
-          setFileTreeDirectoryExpanded(fileTree(), expanded, highlightedFileNode(), true),
-        )
+        if (row?.kind === "directory") {
+          setCollapsedDirPaths((collapsed) => setFileTreeDirectoryExpanded(collapsed, row.path, true))
+        }
       }
       return
     }
     if (key === "left" || key === "h") {
       if (focus() === "files") {
-        const highlighted = highlightedFileNode()
-        const node = highlighted === undefined ? undefined : fileTree().nodes[highlighted]
-        if (node?.kind !== "directory" || !expandedFileNodes().has(node.id)) {
+        const highlighted = highlightedPath()
+        const row = highlighted === undefined ? undefined : fileRows().find((item) => item.path === highlighted)
+        // If on an expanded directory, collapse it; otherwise move to the parent.
+        if (row?.kind !== "directory" || collapsedDirPaths().has(row.path)) {
           setHighlighted(moveFileTreeSelectionToParent(fileRows(), highlighted))
           return
         }
-        setExpandedFileNodes((expanded) =>
-          setFileTreeDirectoryExpanded(fileTree(), expanded, highlightedFileNode(), false),
-        )
+        setCollapsedDirPaths((collapsed) => setFileTreeDirectoryExpanded(collapsed, row.path, false))
       }
       return
     }
@@ -637,10 +666,10 @@ export function DiffViewer(props: { diffs: DiffFile[]; onExit: () => void; onRel
                   theme={theme()}
                   focused={focus() === "files"}
                   width={FILE_TREE_WIDTH}
-                  highlightedNode={highlightedFileNode()}
+                  highlightedPath={highlightedPath()}
                   selectedFileIndex={selectedFileIndex()}
                   reviewedFileNames={reviewedFileNames()}
-                  expandedNodes={expandedFileNodes()}
+                  collapsedDirPaths={collapsedDirPaths()}
                   onRowClick={clickFileTreeRow}
                 />
               </Show>

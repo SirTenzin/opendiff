@@ -26,22 +26,22 @@ export type DiffViewerFileTreeProps = {
   readonly error: unknown
   readonly theme: DiffViewerFileTreeTheme
   readonly focused?: boolean
-  readonly highlightedNode?: number
+  readonly highlightedPath?: string
   readonly selectedFileIndex?: number
   readonly reviewedFileNames?: ReadonlySet<string>
-  readonly expandedNodes?: ReadonlySet<number>
+  readonly collapsedDirPaths?: ReadonlySet<string>
   readonly onRowClick?: (row: FileTreeRow) => void
 }
 
 export function DiffViewerFileTree(props: DiffViewerFileTreeProps) {
   const tree = createMemo(() => buildFileTree(props.files))
-  const rows = createMemo(() => flattenFileTree(tree(), props.expandedNodes))
+  const rows = createMemo(() => flattenFileTree(tree(), props.collapsedDirPaths))
   let scroll: ScrollBoxRenderable | undefined
 
   createEffect(() => {
-    const node = props.highlightedNode
-    if (node === undefined) return
-    const selectedIndex = rows().findIndex((row) => row.id === node)
+    const path = props.highlightedPath
+    if (path === undefined) return
+    const selectedIndex = rows().findIndex((row) => row.path === path)
     if (selectedIndex === -1) return
     const scrollSelectedIntoView = () => scrollFileTreeRowIntoView(scroll, selectedIndex)
     scrollSelectedIntoView()
@@ -67,13 +67,13 @@ export function DiffViewerFileTree(props: DiffViewerFileTreeProps) {
           <Match when={props.files.length > 0}>
             <For each={rows()}>
               {(row, index) => {
-                const highlighted = () => props.focused && props.highlightedNode === row.id
+                const highlighted = () => props.focused && props.highlightedPath === row.path
                 const selected = () => row.fileIndex !== undefined && props.selectedFileIndex === row.fileIndex
                 const reviewed = () => {
                   const file = row.fileIndex === undefined ? undefined : props.files[row.fileIndex]?.file
                   return file !== undefined && (props.reviewedFileNames?.has(file) ?? false)
                 }
-                const prefix = () => fileTreeRowPrefix(rows(), index(), row, props.expandedNodes)
+                const prefix = () => fileTreeRowPrefix(rows(), index(), row, props.collapsedDirPaths)
                 const status = () => fileTreeRowStatus(row, props.files, reviewed())
                 const name = () =>
                   truncate(row.name, Math.max(1, props.width - FILE_TREE_STATUS_WIDTH - prefix().length))
@@ -136,7 +136,7 @@ function fileTreeRowPrefix(
   rows: readonly FileTreeRow[],
   index: number,
   row: FileTreeRow,
-  expandedNodes: ReadonlySet<number> | undefined,
+  collapsedDirPaths: ReadonlySet<string> | undefined,
 ) {
   const indentation = Array.from({ length: row.depth }, (_, depth) => {
     if (depth === 0 && !hasLaterSibling(rows, 0, 0)) return " "
@@ -144,7 +144,7 @@ function fileTreeRowPrefix(
   }).join("")
   const topRoot = index === 0 && row.depth === 0
   const branch = topRoot ? " " : hasLaterSibling(rows, index, row.depth) ? "├─ " : "└─ "
-  const marker = row.kind === "directory" ? (expandedNodes && !expandedNodes.has(row.id) ? "▸ " : "▾ ") : ""
+  const marker = row.kind === "directory" ? (collapsedDirPaths?.has(row.path) ? "▸ " : "▾ ") : ""
 
   return `${indentation}${branch}${marker}`
 }
