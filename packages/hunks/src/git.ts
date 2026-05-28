@@ -29,13 +29,17 @@ function git(args: string[], cwd: string): Promise<string> {
   })
 }
 
-export async function getGitDiffs(cwd: string): Promise<DiffFile[]> {
-  let root: string
+export async function getRepoRoot(cwd: string): Promise<string | null> {
   try {
-    root = (await git(["rev-parse", "--show-toplevel"], cwd)).trim()
+    return (await git(["rev-parse", "--show-toplevel"], cwd)).trim()
   } catch {
-    return []
+    return null
   }
+}
+
+export async function getGitDiffs(cwd: string): Promise<DiffFile[]> {
+  const root = await getRepoRoot(cwd)
+  if (root === null) return []
 
   const numstat = await git(["diff", "HEAD", "--numstat"], root)
   const nameStatus = await git(["diff", "HEAD", "--name-status"], root)
