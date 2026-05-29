@@ -1,6 +1,10 @@
 # yaml-language-server: $schema=https://raw.githubusercontent.com/SchemaStore/schemastore/master/src/schemas/json/github-workflow.json
 name: npm publish
 on:
+  push:
+    branches: [main]
+    paths:
+      - "packages/hunks/**"
   workflow_dispatch:
     inputs:
       version:
@@ -14,6 +18,7 @@ on:
           - major
 jobs:
   publish:
+    if: github.event_name == 'workflow_dispatch' || !contains(github.event.head_commit.message, '[skip ci]')
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
@@ -57,7 +62,7 @@ jobs:
           console.log(`Bumped to v${pkg.version}`)
           EOF
         env:
-          BUMP: ${{ inputs.version }}
+          BUMP: ${{ github.event_name == 'workflow_dispatch' && inputs.version || 'patch' }}
       - run: bun run build
       - uses: actions/setup-node@v4
         with:
@@ -73,6 +78,6 @@ jobs:
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           VERSION=$(node -p "require('./packages/hunks/package.json').version")
           git add packages/hunks/package.json
-          git commit -m "Release @sirtenzin/hunks v${VERSION}"
+          git commit -m "Release @sirtenzin/hunks v${VERSION} [skip ci]"
           git tag "v${VERSION}"
           git push origin HEAD --follow-tags
