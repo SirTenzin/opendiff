@@ -8,7 +8,7 @@ export interface DiffFile {
   status: "added" | "deleted" | "modified"
 }
 
-function git(args: string[], cwd: string): Promise<string> {
+function git(args: string[], cwd: string, opts?: { allowFailure?: boolean }): Promise<string> {
   return new Promise((resolve, reject) => {
     const proc = spawn("git", args, { cwd })
     let stdout = ""
@@ -20,7 +20,10 @@ function git(args: string[], cwd: string): Promise<string> {
       stderr += data
     })
     proc.on("close", (code) => {
-      if (code !== 0) {
+      // `git diff --no-index` exits 1 when files differ (the normal case for an
+      // untracked file vs /dev/null); allowFailure lets callers treat any
+      // non-zero exit as "use whatever stdout we got" instead of throwing.
+      if (code !== 0 && !opts?.allowFailure) {
         reject(new Error(stderr || `git ${args.join(" ")} exited with code ${code}`))
         return
       }
@@ -79,7 +82,7 @@ export async function getGitDiffs(cwd: string): Promise<DiffFile[]> {
     }),
   )
 
-  return files.map((file) => {
+  const tracked: DiffFile[] = files.map((file) => {
     const stat = numstatMap.get(file) ?? { additions: 0, deletions: 0 }
     return {
       file,
@@ -89,4 +92,31 @@ export async function getGitDiffs(cwd: string): Promise<DiffFile[]> {
       status: statusMap.get(file) ?? "modified",
     }
   })
+
+  // `git diff HEAD` never reports untracked files, so list them separately and
+  // synthesize an "added" diff for each (whole file vs /dev/null). --exclude-standard
+  // respects .gitignore/.git/info/exclude, so node_modules etc. stay out. -z guards
+  // against paths with spaces or other special characters.
+  const untrackedRaw = await git(["ls-files", "--others", "--exclude-standard", "-z"], root)
+  const untrackedFiles = untrackedRaw.split("\0").filter(Boolean)
+
+  const untracked: DiffFile[] = await Promise.all(
+    untrackedFiles.map(async (file) => {
+      let patch = ""
+      try {
+        patch = await git(["diff", "--no-index", "--no-color", "-U12", "--", "/dev/null", file], root, {
+          allowFailure: true,
+        })
+      } catch {
+        // Unreadable / vanished between listing and diffing — show it with no patch.
+      }
+      // Count added lines straight from the patch ('+' rows, excluding the '+++' header).
+      const additions = patch
+        ? patch.split("\n").filter((line) => line.startsWith("+") && !line.startsWith("+++")).length
+        : 0
+      return { file, patch: patch || undefined, additions, deletions: 0, status: "added" as const }
+    }),
+  )
+
+  return [...tracked, ...untracked]
 }
