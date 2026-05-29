@@ -1,0 +1,51 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/SchemaStore/schemastore/master/src/schemas/json/github-workflow.json
+name: npm publish
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Version bump type
+        required: true
+        default: patch
+        type: choice
+        options:
+          - patch
+          - minor
+          - major
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+      id-token: write
+    defaults:
+      run:
+        working-directory: packages/hunks
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          registry-url: "https://registry.npmjs.org"
+          node-version: 24
+      - uses: oven-sh/setup-bun@v2
+      - run: bun install --frozen-lockfile
+        working-directory: .
+      - name: Bump version
+        run: npm version ${{ inputs.version }} --no-git-tag-version
+      - run: bun run build
+      - name: Update npm
+        run: npm install -g npm@latest
+      - run: npm publish --provenance --access public
+      - name: Commit and tag release
+        working-directory: .
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          VERSION=$(node -p "require('./packages/hunks/package.json').version")
+          git add packages/hunks/package.json
+          git commit -m "Release @sirtenzin/hunks v${VERSION}"
+          git tag "v${VERSION}"
+          git push origin HEAD --follow-tags

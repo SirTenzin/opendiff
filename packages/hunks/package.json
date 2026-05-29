@@ -1,5 +1,7 @@
 {
   "name": "@sirtenzin/hunks",
+  "description": "Terminal diff viewer for git working-tree changes with keyboard-navigable TUI",
+  "license": "MIT",
   "module": "index.ts",
   "type": "module",
   "devDependencies": {
@@ -31,7 +33,7 @@
     "url": "https://github.com/SirTenzin/hunks.git",
     "directory": "packages/hunks"
   },
-  "files": ["bin", "src", "dist", "bunfig.toml", "tsconfig.json"],
+  "files": ["bin", "src", "dist", "bunfig.toml", "tsconfig.json", "LICENSE", "README.md"],
   "engines": {
     "bun": ">=1.0.0"
   }
