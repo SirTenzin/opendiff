@@ -31,7 +31,7 @@ jobs:
           for attempt in 1 2 3 4 5; do
             if curl -fsSL https://bun.com/install | bash -s "bun-v1.3.14"; then
               echo "$HOME/.bun/bin" >> "$GITHUB_PATH"
-              bun --version
+              "$HOME/.bun/bin/bun" --version
               exit 0
             fi
             echo "Bun install attempt $attempt failed, retrying in 30s..."
